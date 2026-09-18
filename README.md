@@ -1,58 +1,32 @@
-# Qualit 動的商品カード PoC
+# Qualit 公開商品データ取得 PoC
 
-Qualitのブログ記事に「商品コード」だけを保存し、表示時にMakeShopの商品情報を取り直して、商品名・価格・画像・在庫・販売状態を最新化するための最小PoCです。
+## 結論
 
-## 構成
+これは MakeShop 公式APIを使う版ではありません。
+Qualitの公開トップページをVercel Functionから取得し、サーバーHTMLに出ている「新着商品」「おすすめ商品」の商品情報を抽出してJSON化するPoCです。
 
-- `index.html`: 商品カード表示ページ
-- `api/products.js`: Vercel Serverless Function。MakeShopの管理系GraphQL API `searchProduct` をサーバー側から呼びます。
-- `awoo-sdk-test.html`: Qualitで使われているawoo顧客別スクリプトをそのまま読み込む最小テスト
-- `.env.example`: 必要な環境変数
+そのため、APIキー・トークン・Qualit側の管理画面権限は不要です。
 
-## 推奨構成
+## Vercelでの確認手順
 
-ブラウザ → `/api/products?codes=...` → MakeShop GraphQL API
+1. このフォルダをGitHubリポジトリに入れるか、Vercelにインポートする
+2. Framework Preset は `Other` のままでOK
+3. Environment Variables は不要
+4. Deployする
+5. 公開URLを開く
 
-MakeShopのBearer tokenとAPI keyはブラウザに置かず、VercelのEnvironment Variablesに保存します。APIリクエスト時に `x-timestamp` も付与します。
+`/api/products` にアクセスするとJSONが返り、`/` では商品カードとして表示されます。
 
-## MakeShop側の準備
+## 取得元
 
-1. MakeShopでAPI利用登録 / 利用申請を行う
-2. 発行・通知されたGraphQL endpoint、Bearer token、API keyを取得する
-3. Vercelに `MAKESHOP_API_ENDPOINT`、`MAKESHOP_API_TOKEN`、`MAKESHOP_API_KEY` を設定する
-4. `ALLOWED_ORIGIN` をブログのオリジンに設定する
+- https://www.yrl-qualit.com/
+- `#r_new` : 新着商品
+- `#r_recommend` : おすすめ商品
 
-## ローカル確認
+QualitはEUC-JPなので、API側で `TextDecoder('euc-jp')` を使ってデコードしています。
 
-`index.html`は `/api/products` が必要なので、Vercel Dev等で実行してください。
+## 注意
 
-例:
-
-```bash
-npm i -g vercel
-vercel dev
-```
-
-## 記事への組み込み方
-
-記事本文には商品コードだけ持たせます。
-
-```html
-<div class="qualit-products" data-product-codes="000000015488,000000013443"></div>
-```
-
-共通JSで `data-product-codes` を読み、`/api/products?codes=...` を呼び、カードHTMLに変換します。
-
-## 在庫切れの扱い
-
-APIレスポンスの `available` が `false` の商品は、
-
-- 非表示にする
-- 「販売終了」と表示する
-- 同カテゴリの商品へ差し替える
-
-のいずれかにできます。記事のメンテナンス負荷を下げるなら、最終的には「販売終了時に代替候補を返す」ロジックをAPI側に入れるのがおすすめです。
-
-## awooについて
-
-`awoo-sdk-test.html` は、Qualitで読み込まれている顧客別awooスクリプト `5344500543` を利用した表示テストです。awoo側の契約・許可ドメイン・テンプレート仕様に依存するため、ブログ本番のデータ基盤としてはMakeShop APIを推奨します。
+- HTMLの構造が変更されると取得ロジックの修正が必要です。
+- awooのピックアップ商品はJavaScriptで後から描画される可能性があるため、このPoCでは対象外です。
+- 本番運用では、MakeShop公式APIまたはQualit/awoo側から正式なデータ連携手段を取得できるなら、そちらを優先してください。
