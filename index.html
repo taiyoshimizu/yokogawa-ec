@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Qualit 動的商品カード PoC</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:#1d2433; }
+    body { margin:0; background:#f5f7fa; }
+    main { max-width:1100px; margin:0 auto; padding:48px 20px 80px; }
+    h1 { margin:0 0 8px; font-size:30px; }
+    .lead { margin:0 0 28px; color:#5f6b7a; line-height:1.7; }
+    .toolbar { display:flex; gap:10px; margin-bottom:24px; }
+    input { flex:1; min-width:0; padding:12px 14px; border:1px solid #cdd5df; border-radius:8px; font-size:15px; }
+    button { border:0; border-radius:8px; padding:12px 18px; background:#1167b1; color:white; font-weight:700; cursor:pointer; }
+    .status { min-height:24px; margin:0 0 18px; color:#5f6b7a; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:18px; }
+    .card { background:white; border:1px solid #e3e8ef; border-radius:12px; overflow:hidden; box-shadow:0 4px 14px rgba(29,36,51,.05); }
+    .image-wrap { aspect-ratio:4/3; background:#fff; display:flex; align-items:center; justify-content:center; }
+    .image-wrap img { width:100%; height:100%; object-fit:contain; }
+    .body { padding:16px; }
+    .badge { display:inline-block; margin-bottom:9px; padding:4px 8px; border-radius:999px; background:#e9f6ef; color:#166534; font-size:12px; font-weight:700; }
+    .badge.out { background:#fff0f0; color:#b42318; }
+    .name { margin:0 0 12px; font-size:15px; line-height:1.55; min-height:70px; }
+    .price { margin:0 0 14px; font-size:22px; font-weight:800; }
+    .meta { margin:0 0 14px; font-size:12px; color:#667085; }
+    .link { display:block; text-align:center; padding:10px 12px; border-radius:8px; background:#f1f5f9; color:#0f4c81; text-decoration:none; font-weight:700; }
+    .unavailable { opacity:.62; }
+    code { background:#eef2f6; padding:2px 5px; border-radius:4px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Qualit 動的商品カード PoC</h1>
+  <p class="lead">記事側には商品コードだけを置き、表示時にMakeShopから最新の商品名・価格・画像・在庫を取得する想定です。</p>
+
+  <div class="toolbar">
+    <input id="codes" value="000000015488,000000013443,000000013102" aria-label="商品コード">
+    <button id="reload">再取得</button>
+  </div>
+  <p class="status" id="status"></p>
+  <section class="grid" id="products"></section>
+</main>
+
+<script>
+  const yen = new Intl.NumberFormat('ja-JP');
+  const input = document.getElementById('codes');
+  const statusEl = document.getElementById('status');
+  const productsEl = document.getElementById('products');
+
+  function escapeHtml(value = '') {
+    return String(value).replace(/[&<>'"]/g, ch => ({
+      '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;'
+    })[ch]);
+  }
+
+  function render(products) {
+    productsEl.innerHTML = products.map(product => {
+      if (!product.found) {
+        return `<article class="card unavailable"><div class="body"><span class="badge out">取得できません</span><p class="name">商品コード ${escapeHtml(product.systemCode)}</p></div></article>`;
+      }
+
+      const available = product.available;
+      const stockText = product.quantity === null ? '在庫数: 無制限設定' : `在庫数: ${escapeHtml(product.quantity)}`;
+      const image = product.image
+        ? `<img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.name)}" loading="lazy">`
+        : '';
+
+      return `
+        <article class="card ${available ? '' : 'unavailable'}">
+          <div class="image-wrap">${image}</div>
+          <div class="body">
+            <span class="badge ${available ? '' : 'out'}">${available ? '販売中' : '販売停止 / 在庫なし'}</span>
+            <h2 class="name">${escapeHtml(product.name)}</h2>
+            <p class="price">${yen.format(Number(product.price || 0))}円（税込）</p>
+            <p class="meta">${stockText}<br>商品コード: ${escapeHtml(product.systemCode)}</p>
+            <a class="link" href="${escapeHtml(product.url)}" target="_blank" rel="noopener">Qualitで商品を見る</a>
+          </div>
+        </article>`;
+    }).join('');
+  }
+
+  async function loadProducts() {
+    const codes = input.value.split(',').map(v => v.trim()).filter(Boolean).join(',');
+    statusEl.textContent = '最新の商品情報を取得中…';
+    productsEl.innerHTML = '';
+
+    try {
+      const response = await fetch(`/api/products?codes=${encodeURIComponent(codes)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.hint || data.error || 'API error');
+      render(data.products || []);
+      statusEl.textContent = `${data.products.length}件を取得しました。API側は5分キャッシュ設定です。`;
+    } catch (error) {
+      statusEl.innerHTML = `取得できませんでした: ${escapeHtml(error.message)}<br><small>Vercel側で <code>MAKESHOP_API_ENDPOINT</code>、<code>MAKESHOP_API_TOKEN</code>、<code>MAKESHOP_API_KEY</code> を設定してください。</small>`;
+    }
+  }
+
+  document.getElementById('reload').addEventListener('click', loadProducts);
+  loadProducts();
+</script>
+</body>
+</html>
