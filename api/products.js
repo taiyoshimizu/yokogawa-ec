@@ -1,167 +1,127 @@
-const QUALIT_BASE_URL = 'https://www.yrl-qualit.com';
+const QUALIT_URL = 'https://www.yrl-qualit.com/';
 
-function normalizeCodes(value) {
-  const raw = Array.isArray(value) ? value.join(',') : String(value || '');
-  return [...new Set(raw.split(',').map(v => v.trim()).filter(Boolean))]
-    .filter(code => /^\d{12}$/.test(code))
-    .slice(0, 100);
+function stripTags(value = '') {
+  return value
+    .replace(/<br\s*\/?\s*>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function setCors(req, res) {
-  const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
-  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Vary', 'Origin');
-  if (req.method === 'OPTIONS') {
-    res.status(204).end();
-    return true;
+function absoluteUrl(value = '') {
+  try {
+    return new URL(value, QUALIT_URL).toString();
+  } catch {
+    return value;
   }
-  return false;
 }
 
-function nowInJstString() {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 19)
-    .replace('T', ' ');
-}
-
-const QUERY = `
-query QualitBlogProducts($input: SearchProductRequest!) {
-  searchProduct(input: $input) {
-    products {
-      systemCode
-      customCode
-      productName
-      sellPrice
-      quantity
-      maxImageUrl
-      minImageUrl
-      tinyImageUrl
-      display
-      isSellStart
-      isSellEnd
-      isDisplayOutOfSellPeriod
-      sellStartDateTime
-      sellEndDateTime
-      maker
-      updatedAt
-    }
-    searchedCount
+function canonicalProductUrl(value = '') {
+  try {
+    const u = new URL(value, QUALIT_URL);
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return value;
   }
-}`;
+}
+
+function getSection(html, startMarker, endMarker) {
+  const start = html.indexOf(startMarker);
+  if (start === -1) return '';
+  const end = endMarker ? html.indexOf(endMarker, start + startMarker.length) : -1;
+  return end === -1 ? html.slice(start) : html.slice(start, end);
+}
+
+function parseSection(sectionHtml, type) {
+  const results = [];
+  // Qualit/MakeShop の商品カードは、商品画像リンクの直後に商品名・価格が続く。
+  const imageLink = /<a\s+[^>]*href=["']([^"']*\/shopdetail\/(\d{12})[^"']*)["'][^>]*>\s*<img\s+([^>]*?)>/gim;
+  let match;
+
+  while ((match = imageLink.exec(sectionHtml))) {
+    const [full, href, systemCode, imgAttrs] = match;
+    const srcMatch = imgAttrs.match(/\bsrc=["']([^"']+)["']/i);
+    const altMatch = imgAttrs.match(/\balt=["']([^"']*)["']/i);
+    const from = match.index + full.length;
+    const nearby = sectionHtml.slice(from, from + 2200);
+    const priceMatch = nearby.match(/([0-9][0-9,]*)\s*円\s*[（(]税込[）)]/i);
+
+    const name = stripTags(altMatch ? altMatch[1] : '');
+    const price = priceMatch ? Number(priceMatch[1].replace(/,/g, '')) : null;
+
+    if (!name || !systemCode) continue;
+    if (results.some(p => p.systemCode === systemCode)) continue;
+
+    results.push({
+      type,
+      systemCode,
+      name,
+      price,
+      image: absoluteUrl(srcMatch ? srcMatch[1] : ''),
+      url: canonicalProductUrl(href)
+    });
+  }
+
+  return results;
+}
 
 module.exports = async function handler(req, res) {
-  if (setCors(req, res)) return;
-
-  if (req.method !== 'GET') {
-    res.status(405).json({ error: 'Method not allowed' });
-    return;
-  }
-
-  const endpoint = process.env.MAKESHOP_API_ENDPOINT;
-  const token = process.env.MAKESHOP_API_TOKEN;
-  const apiKey = process.env.MAKESHOP_API_KEY;
-
-  if (!endpoint || !token || !apiKey) {
-    res.status(503).json({
-      error: 'MakeShop API is not configured',
-      hint: 'Set MAKESHOP_API_ENDPOINT, MAKESHOP_API_TOKEN and MAKESHOP_API_KEY in the server environment.'
-    });
-    return;
-  }
-
-  const codes = normalizeCodes(req.query.codes);
-  if (!codes.length) {
-    res.status(400).json({
-      error: 'No valid product codes',
-      hint: 'Use ?codes=000000015488,000000013443'
-    });
-    return;
-  }
-
   try {
-    const upstream = await fetch(endpoint, {
-      method: 'POST',
+    const response = await fetch(QUALIT_URL, {
       headers: {
-        'content-type': 'application/json',
-        'authorization': `Bearer ${token}`,
-        'x-api-key': apiKey,
-        'x-timestamp': String(Math.floor(Date.now() / 1000))
+        'user-agent': 'Mozilla/5.0 (compatible; QualitBlogPoC/1.0; +https://vercel.com/)'
       },
-      body: JSON.stringify({
-        query: QUERY,
-        variables: {
-          input: {
-            systemCodes: codes,
-            page: 1,
-            limit: codes.length
-          }
-        }
-      })
+      redirect: 'follow'
     });
 
-    const payload = await upstream.json();
-
-    if (!upstream.ok || payload.errors) {
-      res.status(502).json({
-        error: 'MakeShop API request failed',
-        status: upstream.status,
-        details: payload.errors || payload
+    if (!response.ok) {
+      return res.status(502).json({
+        ok: false,
+        error: `Qualitの公開ページ取得に失敗しました (HTTP ${response.status})`
       });
-      return;
     }
 
-    const byCode = new Map(
-      (payload.data?.searchProduct?.products || []).map(product => [product.systemCode, product])
+    const buf = await response.arrayBuffer();
+    // Qualit は EUC-JP を宣言しているため、UTF-8 として読まず明示的にデコードする。
+    const html = new TextDecoder('euc-jp').decode(buf);
+
+    const newSection = getSection(
+      html,
+      '<div class="section" id="r_new">',
+      '<div class="section" id="r_recommend">'
     );
-    const nowJst = nowInJstString();
+    const recommendSection = getSection(
+      html,
+      '<div class="section" id="r_recommend">',
+      '</div><!--rightContents_left-->'
+    );
 
-    const products = codes.map(requestedCode => {
-      const result = byCode.get(requestedCode);
-      if (!result) {
-        return {
-          systemCode: requestedCode,
-          found: false,
-          available: false
-        };
-      }
+    const newProducts = parseSection(newSection, 'new');
+    const recommendProducts = parseSection(recommendSection, 'recommend');
+    const products = [...newProducts, ...recommendProducts]
+      .filter((p, i, arr) => arr.findIndex(x => x.systemCode === p.systemCode) === i);
 
-      const hasStock = result.quantity === null || Number(result.quantity) > 0;
-      const isPublic = result.display === 'Y';
-      const beforeStart = result.isSellStart === 'Y' && result.sellStartDateTime && result.sellStartDateTime > nowJst;
-      const afterEnd = result.isSellEnd === 'Y' && result.sellEndDateTime && result.sellEndDateTime < nowJst;
-      const inSalePeriod = !beforeStart && !afterEnd;
-      const available = Boolean(isPublic && hasStock && inSalePeriod);
-
-      return {
-        found: true,
-        systemCode: result.systemCode,
-        customCode: result.customCode,
-        name: result.productName,
-        price: result.sellPrice,
-        quantity: result.quantity,
-        image: result.maxImageUrl || result.minImageUrl || result.tinyImageUrl || null,
-        maker: result.maker || null,
-        display: result.display,
-        isPublic,
-        hasStock,
-        inSalePeriod,
-        available,
-        sellStartDateTime: result.sellStartDateTime || null,
-        sellEndDateTime: result.sellEndDateTime || null,
-        updatedAt: result.updatedAt || null,
-        url: `${QUALIT_BASE_URL}/shopdetail/${result.systemCode}/`
-      };
+    res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+    return res.status(200).json({
+      ok: true,
+      source: 'public-html',
+      sourceUrl: QUALIT_URL,
+      fetchedAt: new Date().toISOString(),
+      count: products.length,
+      newCount: newProducts.length,
+      recommendCount: recommendProducts.length,
+      products
     });
-
-    res.setHeader('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=600');
-    res.status(200).json({ products, fetchedAt: new Date().toISOString() });
   } catch (error) {
-    res.status(500).json({
-      error: 'Unexpected server error',
-      details: error instanceof Error ? error.message : String(error)
+    return res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : 'Unknown error'
     });
   }
 };
